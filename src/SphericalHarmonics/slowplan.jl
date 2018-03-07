@@ -145,6 +145,24 @@ function Base.At_mul_B!(P::RotationPlan, A::AbstractMatrix)
     A
 end
 
+# These methods are added subject to a successful package build.
+
+const rotpath = joinpath(Pkg.dir("FastTransforms"), "deps", "rotpar")
+
+if Base.Libdl.find_library(rotpath) ≡ rotpath
+    function Base.A_mul_B!(P::RotationPlan{Float64}, A::AbstractMatrix{Float64})
+        M, N = size(A)
+        ccall((:julia_apply_givens, rotpath), Void, (Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Int64, Int64), A, P.snm, P.cnm, M, N)
+        A
+    end
+
+    function Base.At_mul_B!(P::RotationPlan{Float64}, A::AbstractMatrix{Float64})
+        M, N = size(A)
+        ccall((:julia_apply_givens_t, rotpath), Void, (Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Int64, Int64), A, P.snm, P.cnm, M, N)
+        A
+    end
+end
+
 #=
 function Base.A_mul_B!(P::RotationPlan, A::AbstractMatrix)
     M, N = size(A)
