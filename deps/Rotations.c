@@ -5,6 +5,7 @@
     #include <omp.h>
 #else
     #define omp_get_thread_num() 0
+    #define omp_get_num_threads() 1
 #endif
 
 void julia_apply_givens(double * A, const double * snm, const double * cnm, const int N, const int M);
@@ -15,8 +16,8 @@ int main(void) {
 }
 
 void julia_apply_givens(double * A, const double * snm, const double * cnm, const int N, const int M) {
-    #pragma omp parallel for schedule(dynamic)
-    for (int m = M/2; m > 1; m--) {
+    #pragma omp parallel
+    for (int m = 2 + omp_get_thread_num(); m <= M/2; m += omp_get_num_threads()) {
         double s, c;
         double a1, a2, a3, a4;
         for (int j = m; j > 1; j = j-2) {
@@ -38,8 +39,8 @@ void julia_apply_givens(double * A, const double * snm, const double * cnm, cons
 }
 
 void julia_apply_givens_t(double * A, const double * snm, const double * cnm, const int N, const int M) {
-    #pragma omp parallel for schedule(dynamic)
-    for (int m = M/2; m > 1; m--) {
+    #pragma omp parallel
+    for (int m = 2 + omp_get_thread_num(); m <= M/2; m += omp_get_num_threads()) {
         double s, c;
         double a1, a2, a3, a4;
         for (int j = 2+m%2; j <= m; j = j+2) {
