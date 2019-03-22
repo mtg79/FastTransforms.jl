@@ -3,6 +3,8 @@ Pre-computes a nonuniform fast Fourier transform of type `N`.
 
 For best performance, choose the right number of threads by `FFTW.set_num_threads(4)`, for example.
 """
+tol_nufft = 1e-13;
+
 struct NUFFTPlan{N,T,FFT} <: Plan{T}
     U::Matrix{T}
     V::Matrix{T}
@@ -13,15 +15,26 @@ struct NUFFTPlan{N,T,FFT} <: Plan{T}
     Ones::Vector{T}
 end
 
+
+#struct NUFFTPartialPlan{N,T,FFT} <: Plan{T}
+#    U::Matrix{T}
+#    V::Matrix{T}
+#    p::FFT
+#    t::Vector{Int}
+#    temp::Matrix{T}
+#    temp2::Matrix{T}
+#end
+
 """
 Pre-computes a nonuniform fast Fourier transform of type I.
 """
-function plan_nufft1(ω::AbstractVector{T}, ϵ::T) where {T<:AbstractFloat}
+function plan_nufft1(ω::AbstractVector{T}, ϵ::T = tol_nufft) where {T<:AbstractFloat}
     N = length(ω)
     ωdN = ω/N
     t = AssignClosestEquispacedFFTpoint(ωdN)
     γ = PerturbationParameter(ωdN, AssignClosestEquispacedGridpoint(ωdN))
     K = FindK(γ, ϵ)
+
     U = constructU(ωdN, K)
     V = constructV(range(zero(T), stop=N-1, length=N), K)
     p = plan_bfft!(V, 1)
@@ -33,9 +46,52 @@ function plan_nufft1(ω::AbstractVector{T}, ϵ::T) where {T<:AbstractFloat}
 end
 
 """
+Pre-computes a nonuniform fast Fourier transform of type I.
+"""
+function partial_plan_nufft1(tasks, ω::AbstractVector{T}, t, γ, ϵ::T = tol_nufft) where {T<:AbstractFloat}
+    N = length(ω)
+    ωdN = ω/N
+    K = length(tasks)
+    mytasks = tasks[:L]
+    U = constructU(ωdN, K)
+    U = U[:,mytasks];
+    V = constructV(range(zero(T), stop=N-1, length=N), K)
+    V = V[:,mytasks];
+    myK = length(mytasks);
+    p = plan_bfft!(V, 1)
+    temp = zeros(Complex{T}, N, myK)
+    temp2 = zeros(Complex{T}, N, myK)
+    Ones = ones(Complex{T}, myK)
+    NUFFTPlan{1, eltype(U), typeof(p)}(U, V, p, t, temp, temp2,Ones)
+end
+
+"""
+Pre-computes a nonuniform fast Fourier transform of type I.
+"""
+function parallel_plan_nufft1(ω::AbstractVector{T}, ϵ::T = tol_nufft) where {T<:AbstractFloat}
+    N = length(ω)
+    display(N)
+    ωdN = ω/N
+    t = AssignClosestEquispacedFFTpoint(ωdN)
+    γ = PerturbationParameter(ωdN, AssignClosestEquispacedGridpoint(ωdN))
+    K = FindK(γ, ϵ)
+
+    # divide among cores
+    tasks = distribute(collect(1:K));
+    nufft_partial_plans = Vector{Future}(UndefInitializer(),nprocs())
+    for p = procs()
+        #append!(nufft_partial_plans, @spawnat 2 partial_plan_nufft1(tasks, ω, t, γ, ϵ))
+        nufft_partial_plans[p] = @spawnat p partial_plan_nufft1(tasks, ω, t, γ, ϵ);
+
+    end
+    nufft_partial_plans
+end
+
+
+"""
 Pre-computes a nonuniform fast Fourier transform of type II.
 """
-function plan_nufft2(x::AbstractVector{T}, ϵ::T) where T<:AbstractFloat
+function plan_nufft2(x::AbstractVector{T}, ϵ::T = tol_nufft) where T<:AbstractFloat
     N = length(x)
     t = AssignClosestEquispacedFFTpoint(x)
     γ = PerturbationParameter(x, AssignClosestEquispacedGridpoint(x))
@@ -53,7 +109,7 @@ end
 """
 Pre-computes a nonuniform fast Fourier transform of type III.
 """
-function plan_nufft3(x::AbstractVector{T}, ω::AbstractVector{T}, ϵ::T) where T<:AbstractFloat
+function plan_nufft3(x::AbstractVector{T}, ω::AbstractVector{T}, ϵ::T = tol_nufft) where T<:AbstractFloat
     N = length(x)
     s = AssignClosestEquispacedGridpoint(x)
     t = AssignClosestEquispacedFFTpoint(x)
@@ -83,18 +139,62 @@ end
 
 function mul!(f::AbstractVector{T}, P::NUFFTPlan{1,T}, c::AbstractVector{T}) where {T}
     U, V, p, t, temp, temp2, Ones = P.U, P.V, P.p, P.t, P.temp, P.temp2, P.Ones
-
     broadcast!(*, temp, c, U)
-    conj!(temp)
+    conj!(temp) # Why ?
     fill!(temp2, zero(T))
     recombine_rows!(temp, t, temp2)
     p*temp2
     conj!(temp2)
     broadcast!(*, temp, V, temp2)
-    mul!(f, temp, Ones)
-
+    #mul!(f, temp, Ones)
+    sum!(f,temp)
     f
 end
+
+# function mulpar2(partial_nufft_plans::Vector{Future}, c::AbstractVector{T}) where {T}
+#     #c = complex(c);
+#     #f = zeros(eltype(c), length(c))
+# #    f2 = @spawnat 1 fetch(partial_nufft_plans[1])*c
+# #    f += fetch(f2);
+#     #f2 = @spawnat 2 fetch(partial_nufft_plans[2])*c
+#     #fetch(f2);
+#
+#     sumt = zeros(eltype(c), length(c))
+#     f2 = @spawnat 1 fetch(partial_nufft_plans[1])*c
+#     f = fetch(f2)
+#     sumt = sumt + f
+#
+#     f2 = @spawnat 2 fetch(partial_nufft_plans[2])*c
+#     f = fetch(f2)
+#     sumt = sumt + f
+#
+#
+#
+#     for p in procs()
+#        f2 = @spawnat p fetch(partial_nufft_plans[p])*f
+#        f += fetch(f2);
+#     end
+#     f
+# end
+
+function mulpar!(f::AbstractVector{T}, P::NUFFTPlan{1,T}, c::AbstractVector{T}) where {T}
+    U, V, p, t, temp, temp2, Ones = P.U, P.V, P.p, P.t, P.temp, P.temp2, P.Ones
+    f = @distributed (+) for i = 1:size(U,2)
+        tmpMat = zeros(T, length(f),1);
+        tmpMat[:,1] = c.*U[:,i];
+        conj!(tmpMat);
+        tmp2 = zeros(T,length(f),1);
+        recombine_rows!(tmpMat, t, tmp2)
+        tmp3 = tmp2[:,1];
+        p*tmp3;
+        tmp2[:,1] = tmp3;
+        conj!(tmp2)
+        tmp = tmp2.*V[:,i];
+        f[:] += tmp;
+    end
+    f
+end
+
 
 function mul!(F::Matrix{T}, P::NUFFTPlan{N,T}, C::Matrix{T}) where {N,T}
     for J = 1:size(F, 2)
@@ -206,7 +306,7 @@ Computes a nonuniform fast Fourier transform of type I:
 f_j = \\sum_{k=0}^{N-1} c_k e^{-2\\pi{\\rm i} \\frac{j}{N} \\omega_k},\\quad{\\rm for}\\quad 0 \\le j \\le N-1.
 ```
 """
-nufft1(c::AbstractVector, ω::AbstractVector{T}, ϵ::T) where {T<:AbstractFloat} = plan_nufft1(ω, ϵ)*c
+nufft1(c::AbstractVector, ω::AbstractVector{T}, ϵ::T = tol_nufft) where {T<:AbstractFloat} = plan_nufft1(ω, ϵ)*c
 
 """
 Computes a nonuniform fast Fourier transform of type II:
@@ -215,7 +315,7 @@ Computes a nonuniform fast Fourier transform of type II:
 f_j = \\sum_{k=0}^{N-1} c_k e^{-2\\pi{\\rm i} x_j k},\\quad{\\rm for}\\quad 0 \\le j \\le N-1.
 ```
 """
-nufft2(c::AbstractVector, x::AbstractVector{T}, ϵ::T) where {T<:AbstractFloat}  = plan_nufft2(x, ϵ)*c
+nufft2(c::AbstractVector, x::AbstractVector{T}, ϵ::T = tol_nufft) where {T<:AbstractFloat}  = plan_nufft2(x, ϵ)*c
 
 """
 Computes a nonuniform fast Fourier transform of type III:
@@ -224,7 +324,7 @@ Computes a nonuniform fast Fourier transform of type III:
 f_j = \\sum_{k=0}^{N-1} c_k e^{-2\\pi{\\rm i} x_j \\omega_k},\\quad{\\rm for}\\quad 0 \\le j \\le N-1.
 ```
 """
-nufft3(c::AbstractVector, x::AbstractVector{T}, ω::AbstractVector{T}, ϵ::T) where {T<:AbstractFloat} = plan_nufft3(x, ω, ϵ)*c
+nufft3(c::AbstractVector, x::AbstractVector{T}, ω::AbstractVector{T}, ϵ::T = tol_nufft) where {T<:AbstractFloat} = plan_nufft3(x, ω, ϵ)*c
 
 const nufft = nufft3
 const plan_nufft = plan_nufft3
@@ -244,7 +344,7 @@ end
 """
 Pre-computes a 2D nonuniform fast Fourier transform of type I-I.
 """
-function plan_nufft1(ω::AbstractVector{T}, π::AbstractVector{T}, ϵ::T) where T<:AbstractFloat
+function plan_nufft1(ω::AbstractVector{T}, π::AbstractVector{T}, ϵ::T = tol_nufft) where T<:AbstractFloat
     p1 = plan_nufft1(ω, ϵ)
     p2 = plan_nufft1(π, ϵ)
     temp = zeros(Complex{T}, length(π))
@@ -255,7 +355,7 @@ end
 """
 Pre-computes a 2D nonuniform fast Fourier transform of type II-II.
 """
-function plan_nufft2(x::AbstractVector{T}, y::AbstractVector{T}, ϵ::T) where T<:AbstractFloat
+function plan_nufft2(x::AbstractVector{T}, y::AbstractVector{T}, ϵ::T = tol_nufft) where T<:AbstractFloat
     p1 = plan_nufft2(x, ϵ)
     p2 = plan_nufft2(y, ϵ)
     temp = zeros(Complex{T}, length(y))
@@ -290,7 +390,7 @@ Computes a 2D nonuniform fast Fourier transform of type I-I:
 F_{i,j} = \\sum_{k=0}^{M-1}\\sum_{\\ell=0}^{N-1} C_{k,\\ell} e^{-2\\pi{\\rm i} (\\frac{i}{M} \\omega_k + \\frac{j}{N} \\pi_{\\ell})},\\quad{\\rm for}\\quad 0 \\le i \\le M-1,\\quad 0 \\le j \\le N-1.
 ```
 """
-nufft1(C::Matrix, ω::AbstractVector{T}, π::AbstractVector{T}, ϵ::T) where {T<:AbstractFloat} = plan_nufft1(ω, π, ϵ)*C
+nufft1(C::Matrix, ω::AbstractVector{T}, π::AbstractVector{T}, ϵ::T = tol_nufft) where {T<:AbstractFloat} = plan_nufft1(ω, π, ϵ)*C
 
 """
 Computes a 2D nonuniform fast Fourier transform of type II-II:
@@ -299,7 +399,7 @@ Computes a 2D nonuniform fast Fourier transform of type II-II:
 F_{i,j} = \\sum_{k=0}^{M-1}\\sum_{\\ell=0}^{N-1} C_{k,\\ell} e^{-2\\pi{\\rm i} (x_i k + y_j \\ell)},\\quad{\\rm for}\\quad 0 \\le i \\le M-1,\\quad 0 \\le j \\le N-1.
 ```
 """
-nufft2(C::Matrix, x::AbstractVector{T}, y::AbstractVector{T}, ϵ::T) where {T<:AbstractFloat} = plan_nufft2(x, y, ϵ)*C
+nufft2(C::Matrix, x::AbstractVector{T}, y::AbstractVector{T}, ϵ::T = tol_nufft) where {T<:AbstractFloat} = plan_nufft2(x, y, ϵ)*C
 
 
 FindK(γ::T, ϵ::T) where {T<:AbstractFloat} = γ ≤ ϵ ? 1 : Int(ceil(5*γ*exp(lambertw(log(10/ϵ)/γ/7))))

@@ -3,6 +3,7 @@ module FastTransforms
 
 using ToeplitzMatrices, HierarchicalMatrices, LowRankApprox, ProgressMeter, Compat,
         AbstractFFTs, SpecialFunctions
+using Distributed, DistributedArrays
 
 if VERSION < v"0.7-"
     using Base.FFTW
@@ -52,6 +53,7 @@ export gaunt
 
 export nufft, nufft1, nufft2, nufft3, inufft1, inufft2
 export plan_nufft, plan_nufft1, plan_nufft2, plan_nufft3, plan_inufft1, plan_inufft2
+export parallel_plan_nufft1, partial_plan_nufft1, mulpar!, par_plan_nufft1
 
 export paduatransform, ipaduatransform, paduatransform!, ipaduatransform!, paduapoints
 export plan_paduatransform!, plan_ipaduatransform!
