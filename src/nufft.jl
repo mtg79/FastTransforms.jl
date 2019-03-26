@@ -15,15 +15,11 @@ struct NUFFTPlan{N,T,FFT} <: Plan{T}
     Ones::Vector{T}
 end
 
+struct ParallelNUFFTPlan{T} <: Plan{T}
+    partial_plans::Vector{Future}
+    partial_sums::DArray{T,2,Array{T,2}}
+end
 
-#struct NUFFTPartialPlan{N,T,FFT} <: Plan{T}
-#    U::Matrix{T}
-#    V::Matrix{T}
-#    p::FFT
-#    t::Vector{Int}
-#    temp::Matrix{T}
-#    temp2::Matrix{T}
-#end
 
 """
 Pre-computes a nonuniform fast Fourier transform of type I.
@@ -54,10 +50,10 @@ function partial_plan_nufft1(tasks, ω::AbstractVector{T}, t, γ, ϵ::T = tol_nu
     K = length(tasks)
     mytasks = tasks[:L]
     U = constructU(ωdN, K)
-    U = U[:,mytasks];
+    U = U[:,mytasks]
     V = constructV(range(zero(T), stop=N-1, length=N), K)
-    V = V[:,mytasks];
-    myK = length(mytasks);
+    V = V[:,mytasks]
+    myK = length(mytasks)
     p = plan_bfft!(V, 1)
     temp = zeros(Complex{T}, N, myK)
     temp2 = zeros(Complex{T}, N, myK)
@@ -78,14 +74,39 @@ function parallel_plan_nufft1(ω::AbstractVector{T}, ϵ::T = tol_nufft) where {T
 
     # divide among cores
     tasks = distribute(collect(1:K));
-    nufft_partial_plans = Vector{Future}(UndefInitializer(),nprocs())
-    for p = procs()
-        #append!(nufft_partial_plans, @spawnat 2 partial_plan_nufft1(tasks, ω, t, γ, ϵ))
-        nufft_partial_plans[p] = @spawnat p partial_plan_nufft1(tasks, ω, t, γ, ϵ);
 
-    end
-    nufft_partial_plans
+    partial_plans = [@spawnat p partial_plan_nufft1(tasks, ω, t, γ, ϵ) for p in procs()]
+    partial_sums = dzeros(Complex{eltype(ω)}, (length(ω), nworkers()) , workers(), [1,nworkers()]);
+    #partial_results = dzeros(eltype(c), (length(c), nworkers()) , workers(), [1,nworkers()]);
+    ParallelNUFFTPlan{Complex{eltype(ω)}}(partial_plans, partial_sums)
+    #nufft_partial_plans, partial_results
 end
+
+# Old version
+# function mulpar2(partial_nufft_plans::Vector{Future}, c::AbstractVector{T}) where {T}
+#
+#     sumt = zeros(eltype(c), length(c))
+#     for p in procs()
+#         f2 = @spawnat p fetch(partial_nufft_plans[p])*c
+#         f = fetch(f2)
+#         sumt = sumt + f
+#     end
+#     sumt
+# end
+
+"""
+Performs the parallel NUFFT-I using the precomputed plan.
+"""
+function mulpar3(parallel_plan::ParallelNUFFTPlan{T}, c::AbstractVector{T}) where {T}
+
+    for w in workers()
+        display(fetch( @spawnat w fetch(parallel_plan.partial_plans[w])*c))
+        k = @spawnat w parallel_plan.partial_sums[:L][:]=fetch(parallel_plan.partial_plans[w])*c
+        display(fetch(k))
+    end
+    f = reduce(+, parallel_plan.partial_sums,dims=2)
+end
+
 
 
 """
@@ -151,49 +172,24 @@ function mul!(f::AbstractVector{T}, P::NUFFTPlan{1,T}, c::AbstractVector{T}) whe
     f
 end
 
-# function mulpar2(partial_nufft_plans::Vector{Future}, c::AbstractVector{T}) where {T}
-#     #c = complex(c);
-#     #f = zeros(eltype(c), length(c))
-# #    f2 = @spawnat 1 fetch(partial_nufft_plans[1])*c
-# #    f += fetch(f2);
-#     #f2 = @spawnat 2 fetch(partial_nufft_plans[2])*c
-#     #fetch(f2);
-#
-#     sumt = zeros(eltype(c), length(c))
-#     f2 = @spawnat 1 fetch(partial_nufft_plans[1])*c
-#     f = fetch(f2)
-#     sumt = sumt + f
-#
-#     f2 = @spawnat 2 fetch(partial_nufft_plans[2])*c
-#     f = fetch(f2)
-#     sumt = sumt + f
-#
-#
-#
-#     for p in procs()
-#        f2 = @spawnat p fetch(partial_nufft_plans[p])*f
-#        f += fetch(f2);
+
+# function mulpar!(f::AbstractVector{T}, P::NUFFTPlan{1,T}, c::AbstractVector{T}) where {T}
+#     U, V, p, t, temp, temp2, Ones = P.U, P.V, P.p, P.t, P.temp, P.temp2, P.Ones
+#     f = @distributed (+) for i = 1:size(U,2)
+#         tmpMat = zeros(T, length(f),1);
+#         tmpMat[:,1] = c.*U[:,i];
+#         conj!(tmpMat);
+#         tmp2 = zeros(T,length(f),1);
+#         recombine_rows!(tmpMat, t, tmp2)
+#         tmp3 = tmp2[:,1];
+#         p*tmp3;
+#         tmp2[:,1] = tmp3;
+#         conj!(tmp2)
+#         tmp = tmp2.*V[:,i];
+#         f[:] += tmp;
 #     end
 #     f
 # end
-
-function mulpar!(f::AbstractVector{T}, P::NUFFTPlan{1,T}, c::AbstractVector{T}) where {T}
-    U, V, p, t, temp, temp2, Ones = P.U, P.V, P.p, P.t, P.temp, P.temp2, P.Ones
-    f = @distributed (+) for i = 1:size(U,2)
-        tmpMat = zeros(T, length(f),1);
-        tmpMat[:,1] = c.*U[:,i];
-        conj!(tmpMat);
-        tmp2 = zeros(T,length(f),1);
-        recombine_rows!(tmpMat, t, tmp2)
-        tmp3 = tmp2[:,1];
-        p*tmp3;
-        tmp2[:,1] = tmp3;
-        conj!(tmp2)
-        tmp = tmp2.*V[:,i];
-        f[:] += tmp;
-    end
-    f
-end
 
 
 function mul!(F::Matrix{T}, P::NUFFTPlan{N,T}, C::Matrix{T}) where {N,T}
